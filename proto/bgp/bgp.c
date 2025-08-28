@@ -395,7 +395,7 @@ failA:
   /* Cleanup listening sockets */
   WALK_LIST2(blr, nxt, p->listen, pn)
   {
-    if (blr != failed)
+    if (blr == failed)
       break;
 
     bgp_sk_delete_ao_key(p, blr->sock->sk, key, NULL, -1, -1, "listening");
