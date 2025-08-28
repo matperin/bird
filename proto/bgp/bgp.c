@@ -456,25 +456,28 @@ bgp_disable_ao_key(struct bgp_proto *p, struct bgp_ao_key *key, struct bgp_activ
 
   BGP_TRACE(D_EVENTS, "Deleting TCP-AO key %d/%d", key->key.send_id, key->key.recv_id);
 
+  /* Try to disable everywhere even if first fails */
+  int rv = 0;
+
   /* Handle listening socket */
   struct bgp_listen_request *blr; node *nxt;
   WALK_LIST2(blr, nxt, p->listen, pn)
     if (bgp_sk_delete_ao_key(p, blr->sock->sk, key, NULL, -1, -1, "listening") < 0)
-      return -1;
+      rv = -1;
 
   key->active = 0;
 
   /* Handle incoming socket */
   if (p->incoming_conn.sk && info)
     if (bgp_sk_delete_ao_key(p, p->incoming_conn.sk, key, info->backup, info->in_current, info->in_rnext, "session (in)") < 0)
-      return -1;
+      rv = -1;
 
   /* Handle outgoing socket */
   if (p->outgoing_conn.sk && info)
     if (bgp_sk_delete_ao_key(p, p->outgoing_conn.sk, key, info->backup, info->out_current, info->out_rnext, "session (out)") < 0)
-      return -1;
+      rv = -1;
 
-  return 0;
+  return rv;
 }
 
 static int
