@@ -24,6 +24,7 @@ struct l3vpn_proto {
   struct channel *ip6_channel;
   struct channel *vpn4_channel;
   struct channel *vpn6_channel;
+  struct channel *rtfilter_channel;
 
   vpn_rd rd;
   struct f_tree *import_target;
