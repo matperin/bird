@@ -2380,6 +2380,7 @@ bgp_channel_start(struct channel *C)
   /* Initialize rtfilter */
   if (c->c.net_type == NET_RTFILTER)
   {
+    p->rtfilter_use = true;
     p->rtfilter_tree = NULL;
     p->rtfilter_tree_pool = lp_new(p->p.pool);
     p->rtfilter_initial_feed = 1;
@@ -2414,6 +2415,7 @@ bgp_channel_shutdown(struct channel *C)
     settle_cancel(&p->rtfilter_settle);
     fib_free(&p->rtfilter_fib);
 
+    p->rtfilter_use = false;
     p->rtfilter_tree = NULL;
     p->rtfilter_tree_pool = NULL;
     p->rtfilter_fib = (struct fib) { 0 };
