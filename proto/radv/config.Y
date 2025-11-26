@@ -352,6 +352,11 @@ radv_sensitive:
  | SENSITIVE bool { $$ = $2; }
  ;
 
+CF_CLI_HELP(SHOW RADV, ..., [[Show information about RAdv protocol]]);
+
+CF_CLI(SHOW RADV NEIGHBORS, optproto opttext, [<name>] [\"<interface>\"], [[Show discovered neighbor routers]])
+{ PROTO_WALK_CMD($4, &proto_radv, p) radv_show_neighbors(p, $5); };
+
 CF_CODE
 
 CF_END

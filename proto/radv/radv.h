@@ -240,6 +240,7 @@ static inline void radv_invalidate(struct radv_iface *ifa)
 
 /* radv.c */
 void radv_iface_notify(struct radv_iface *ifa, int event);
+void radv_show_neighbors(struct proto *P, const char *iff);
 
 /* packets.c */
 int radv_process_domain(struct radv_dnssl_config *cf);

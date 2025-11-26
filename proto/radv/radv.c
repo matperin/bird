@@ -807,6 +807,74 @@ static struct ea_class ea_radv_lifetime = {
   .type = T_INT,
 };
 
+void
+radv_show_neighbors(struct proto *P, const char *iff)
+{
+  struct radv_proto *p = (struct radv_proto *) P;
+  struct radv_iface *ifa;
+  btime now = current_time();
+  int count = 0;
+
+  if (p->p.proto_state != PS_UP)
+  {
+    cli_msg(-1018, "%s: is not up", p->p.name);
+    cli_msg(0, "");
+    return;
+  }
+
+  WALK_LIST(ifa, p->iface_list)
+  {
+    if (iff && !patmatch(iff, ifa->iface->name))
+      continue;
+
+    if (!ifa->cf->neighbor_discovery)
+      continue;
+
+    int iface_count = 0;
+
+    HASH_WALK(ifa->nd_htbl, next, n)
+    {
+      if (iface_count == 0)
+      {
+        cli_msg(-1018, "Interface %s:", ifa->iface->name);
+        cli_msg(-1018, "  %-40s %10s %10s %8s %8s",
+                "Router", "Lifetime", "Preference", "HopLimit", "LinkMTU");
+      }
+
+      int time_to_expire = 0;
+      if (n->expires_at > 0 && n->expires_at > now)
+      {
+        btime remaining = n->expires_at - now;
+        time_to_expire = (int)(remaining / 1000000);
+      }
+
+      cli_msg(-1018, "  %-40I %8us   %10s %8u %8u",
+              n->router_ip,
+              time_to_expire,
+              radv_pref_str(n->preference),
+              n->current_hop_limit,
+              n->link_mtu);
+
+      iface_count++;
+      count++;
+    }
+    HASH_WALK_END;
+
+    if (iface_count > 0)
+      cli_msg(-1018, "");
+  }
+
+  if (count == 0)
+  {
+    if (iff)
+      cli_msg(-1018, "%s: No neighbor routers on interface %s", p->p.name, iff);
+    else
+      cli_msg(-1018, "%s: No neighbor routers discovered", p->p.name);
+  }
+
+  cli_msg(0, "");
+}
+
 struct protocol proto_radv = {
   .name =		"RAdv",
   .template =		"radv%d",
