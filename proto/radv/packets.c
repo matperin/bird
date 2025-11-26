@@ -23,6 +23,15 @@ struct radv_ra_packet
   u32 retrans_timer;
 };
 
+/* Hash table macros for neighbor routers */
+#define NEIGH_KEY(n)		n->router_ip
+#define NEIGH_NEXT(n)		n->next
+#define NEIGH_EQ(a,b)		ipa_equal(a,b)
+#define NEIGH_FN(k)		ipa_hash(k)
+#define NEIGH_PARAMS		/8, *2, 2, 2, 6, 20
+
+HASH_DEFINE_REHASH_FN(NEIGH, struct radv_neighbor)
+
 #define OPT_RA_MANAGED 0x80
 #define OPT_RA_OTHER_CFG 0x40
 
@@ -460,6 +469,70 @@ radv_receive_rs(struct radv_proto *p, struct radv_iface *ifa, ip_addr from)
     radv_iface_notify(ifa, RA_EV_RS);
 }
 
+void
+radv_process_ra(struct radv_iface *ifa, ip_addr from, struct radv_ra_packet *pkt, int length)
+{
+  struct radv_proto *p = ifa->ra;
+  
+  if (!ifa->cf->neighbor_discovery)
+    return;
+
+  /* Basic validation */
+  if ((uint)length < sizeof(struct radv_ra_packet))
+  {
+    RADV_TRACE(D_PACKETS, "Malformed RA received from %I via %s",
+	       from, ifa->iface->name);
+    return;
+  }
+
+  u16 router_lifetime = ntohs(pkt->router_lifetime);
+  
+  /* Check if there is an existing neighbor entry */
+  struct radv_neighbor *neigh = HASH_FIND(ifa->nd_htbl, NEIGH, from);
+
+  /* Skip adding entry or delete it (if already present) when router lifetime is 0 */
+  if (router_lifetime == 0)
+  {
+    if (neigh)
+    {
+      RADV_TRACE(D_EVENTS, "Neighbor entry for %I on %s expired",
+		 neigh->router_ip, ifa->iface->name);
+
+      HASH_REMOVE2(ifa->nd_htbl, NEIGH, ifa->pool, neigh);
+      mb_free(neigh);
+    }
+    
+    return;
+  }
+  
+  /* Create new neighbor entry if it doesn't exist */
+  if (!neigh)
+  {
+    neigh = mb_allocz(ifa->pool, sizeof(struct radv_neighbor));
+    neigh->router_ip = from;
+    HASH_INSERT2(ifa->nd_htbl, NEIGH, ifa->pool, neigh);
+    
+    RADV_TRACE(D_EVENTS, "New neighbor router discovered: %I via %s",
+	       from, ifa->iface->name);
+  }
+
+  /* Update neighbor information from RA packet */
+  neigh->router_lifetime = router_lifetime;
+  neigh->current_hop_limit = pkt->current_hop_limit;
+  neigh->flags = pkt->flags;
+  neigh->preference = pkt->flags & RA_PREF_MASK;
+  neigh->reachable_time = ntohl(pkt->reachable_time);
+  neigh->retrans_timer = ntohl(pkt->retrans_timer);
+  neigh->expires_at = current_time() + neigh->router_lifetime S;
+
+  /* TODO: Add RA options parsing here if needed */
+
+  RADV_TRACE(D_PACKETS, "Processed RA from %I: lifetime=%u, hop_limit=%u, preference=%s",
+	     from, neigh->router_lifetime, neigh->current_hop_limit,
+	     neigh->preference == RA_PREF_HIGH ? "high" :
+	     neigh->preference == RA_PREF_LOW ? "low" : "medium");
+}
+
 static int
 radv_rx_hook(sock *sk, uint size)
 {
@@ -493,7 +566,8 @@ radv_rx_hook(sock *sk, uint size)
   case ICMPV6_RA:
     RADV_TRACE(D_PACKETS, "Received RA from %I via %s",
 	       sk->faddr, ifa->iface->name);
-    /* FIXME - there should be some checking of received RAs, but we just ignore them */
+    if (ifa->cf->neighbor_discovery)
+      radv_process_ra(ifa, sk->faddr, (struct radv_ra_packet *)buf, size);
     return 1;
 
   default:

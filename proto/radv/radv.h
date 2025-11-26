@@ -17,6 +17,7 @@
 #include "lib/socket.h"
 #include "lib/timer.h"
 #include "lib/resource.h"
+#include "lib/hash.h"
 #include "nest/protocol.h"
 #include "nest/iface.h"
 #include "nest/route.h"
@@ -91,6 +92,7 @@ struct radv_iface_config
   u8 route_lifetime_sensitive;	/* Whether route_lifetime depends on trigger */
   u8 default_preference;	/* Default Router Preference (RFC 4191) */
   u8 route_preference;		/* Specific Route Preference (RFC 4191) */
+  u8 neighbor_discovery;	/* Enable neighbor router discovery */
 };
 
 struct radv_prefix_config
@@ -175,6 +177,21 @@ struct radv_prefix		/* One prefix we advertise */
   struct radv_prefix_config *cf; /* The config tied to this prefix */
 };
 
+/* Discovered neighbor router information */
+struct radv_neighbor
+{
+  struct radv_neighbor *next;
+  ip_addr router_ip;		/* IPv6 address of the router */
+  u16 router_lifetime;		/* Router lifetime in seconds (from RA) */
+  u8 current_hop_limit;		/* Current hop limit */
+  u8 flags;			/* Flags (Managed, Other configuration) */
+  u8 preference;		/* Router preference (RFC 4191) */
+  u32 reachable_time;		/* Reachable time in milliseconds */
+  u32 retrans_timer;		/* Retransmit timer in milliseconds */
+  u32 link_mtu;			/* Link MTU */
+  btime expires_at;		/* Time when this becomes stale */
+};
+
 struct radv_iface
 {
   node n;
@@ -194,6 +211,8 @@ struct radv_iface
   btime last;			/* Time of last sending of RA */
   u16 plen;			/* Length of prepared RA in tbuf, or 0 if not valid */
   byte initial;			/* How many RAs are still to be sent as initial */
+
+  HASH(struct radv_neighbor) nd_htbl; /* Hash table containing discovered neighbor routers */
 };
 
 #define RA_EV_INIT 1		/* Switch to initial mode */

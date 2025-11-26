@@ -12,6 +12,15 @@
 #include "radv.h"
 #include "lib/macro.h"
 
+/* Neighbor Discovery Hash Table */
+#define NEIGH_KEY(n)		n->router_ip
+#define NEIGH_NEXT(n)		n->next
+#define NEIGH_EQ(a,b)		ipa_equal(a,b)
+#define NEIGH_FN(k)		ipa_hash(k)
+#define NEIGH_PARAMS		/8, *2, 2, 2, 6, 20
+
+HASH_DEFINE_REHASH_FN(NEIGH, struct radv_neighbor)
+
 /**
  * DOC: Router Advertisements
  *
@@ -47,6 +56,7 @@ static struct ea_class ea_radv_preference, ea_radv_lifetime;
 
 static void radv_prune_prefixes(struct radv_iface *ifa);
 static void radv_prune_routes(struct radv_proto *p);
+static void radv_neighbor_prune(struct radv_iface *ifa);
 
 static void
 radv_timer(timer *tm)
@@ -62,6 +72,9 @@ radv_timer(timer *tm)
 
   if (p->prune_time <= now)
     radv_prune_routes(p);
+
+  /* Prune stale discovered neighbor routers entries */
+  radv_neighbor_prune(ifa);
 
   radv_send_ra(ifa, IPA_NONE);
 
@@ -212,6 +225,30 @@ radv_prune_prefixes(struct radv_iface *ifa)
   ifa->prune_time = next;
 }
 
+void
+radv_neighbor_prune(struct radv_iface *ifa)
+{
+  struct radv_proto *p = ifa->ra;
+
+  /* Skip pruning check if neighbor discovery is not enabled */
+  if (!ifa->cf->neighbor_discovery)
+    return;
+
+  HASH_WALK_DELSAFE(ifa->nd_htbl, next, n)
+  {
+    /* Check if neighbor has expired */
+    if (n->expires_at <= current_time())
+    {
+      RADV_TRACE(D_EVENTS, "Neighbor entry for %I on %s expired",
+		 n->router_ip, ifa->iface->name);
+
+      HASH_REMOVE2(ifa->nd_htbl, NEIGH, ifa->pool, n);
+      mb_free(n);
+    }
+  }
+  HASH_WALK_END;
+}
+
 static char* ev_name[] = { NULL, "Init", "Change", "RS" };
 
 void
@@ -297,6 +334,9 @@ radv_iface_new(struct radv_proto *p, struct iface *iface, struct radv_iface_conf
   init_list(&ifa->prefixes);
   ifa->prune_time = TIME_INFINITY;
 
+  /* Initialize neighbor hash table */
+  HASH_INIT(ifa->nd_htbl, pool, 4);
+
   add_tail(&p->iface_list, NODE ifa);
 
   ifa->timer = tm_new_init(pool, radv_timer, ifa, 0, 0);
@@ -322,6 +362,8 @@ radv_iface_remove(struct radv_iface *ifa)
   RADV_TRACE(D_EVENTS, "Removing interface %s", ifa->iface->name);
 
   rem_node(NODE ifa);
+
+  HASH_FREE(ifa->nd_htbl);
 
   rp_free(ifa->pool);
 }
