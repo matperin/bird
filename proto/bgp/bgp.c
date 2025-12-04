@@ -173,13 +173,6 @@ static void bgp_listen_close(struct bgp_proto *, struct bgp_listen_request *);
 static void bgp_graceful_restart_feed(struct bgp_channel *c);
 static void bgp_restart_route_refresh(void *_bc);
 
-/* Dynamic BGP detection */
-#define bgp_is_dynamic(x) (_Generic((x),			\
-    struct bgp_proto *: ipa_zero((x)->remote_ip),		\
-    struct bgp_config *: ipa_zero((x)->remote_ip),		\
-    struct bgp_listen_request *: ipa_zero((x)->remote_ip)))
-
-
 /*
  * BGP Instance Management
  */
@@ -1213,11 +1206,62 @@ bgp_decision(void *vp)
     bgp_down(p);
 }
 
+/**
+ * bgp_find_existing_session - check if a dynamic BGP session already exists for a peer
+ * @peer_addr: Remote peer IP address to check
+ *
+ * Checks if there's already an existing dynamic BGP session for the given peer
+ * by walking through all BGP protocols.
+ *
+ * Returns: pointer to the existing BGP protocol, or NULL if none found
+ */
+static struct bgp_proto *
+bgp_find_existing_session(ip_addr peer_addr)
+{
+  struct config *cfg = OBSREF_GET(config);
+  if (!cfg)
+    return NULL;
+
+  struct proto_config *pc;
+  WALK_LIST(pc, cfg->protos)
+  {
+    if (pc->protocol != &proto_bgp)
+      continue;
+
+    if (pc->proto)
+    {
+      struct bgp_proto *child_p = (struct bgp_proto *) pc->proto;
+      
+      if (ipa_equal(child_p->remote_ip, peer_addr))
+      {
+        log(L_DEBUG "BGP: Found existing session %s for peer %I", 
+            child_p->p.name, peer_addr);
+        return child_p;
+      }
+    }
+  }
+  return NULL;
+}
+
 static void
 bgp_spawn(struct bgp_proto *pp, struct birdsock *sk)
 {
   struct symbol *sym;
   char fmt[SYM_MAX_LEN];
+
+  /* Check if there's an existing session for this peer and shut it down.
+   * The dynamic BGP session (with the incoming socket) takes precedence. */
+  struct bgp_proto *existing = bgp_find_existing_session(sk->daddr);
+  if (existing)
+  {
+    log(L_DEBUG "BGP: Found existing session %s for %I, shutting it down to use incoming connection", 
+        existing->p.name, sk->daddr);
+    
+    /* Mark for deletion and disable */
+    existing->p.cf_new = NULL;
+    existing->p.reconfiguring = 1;
+    proto_disable(&existing->p);
+  }
 
   bsprintf(fmt, "%s%%0%dd", pp->cf->dynamic_name, pp->cf->dynamic_name_digits);
 
@@ -1245,6 +1289,92 @@ bgp_spawn(struct bgp_proto *pp, struct birdsock *sk)
 
   /* And enable the protocol */
   proto_enable(&p->p);
+}
+
+void
+bgp_peer_spawn(struct callback *cb)
+{
+  struct bgp_peer_spawn *ev = (void *) cb;
+
+  /* Check if a session for this peer already exists */
+  if (bgp_find_existing_session(ev->peer_addr))
+  {
+    log(L_DEBUG "BGP: Peer %I already has existing session, not spawning duplicate", ev->peer_addr);
+    return;
+  }
+
+  struct symbol *sym;
+  char fmt[SYM_MAX_LEN];
+
+  log(L_DEBUG "BGP: Spawning new peer session for %I", ev->peer_addr);
+  bsprintf(fmt, "%s%%0%dd", ev->p->cf->dynamic_name, ev->p->cf->dynamic_name_digits);
+
+  /* Clone the configuration */
+  new_config = OBSREF_GET(config);
+  cfg_mem = new_config->mem;
+  new_config->current_scope = new_config->root_scope;
+  sym = cf_default_name(new_config, fmt, &(ev->p->dynamic_name_counter));
+  proto_clone_config(sym, ev->p->p.cf);
+  new_config = NULL;
+  cfg_mem = NULL;
+
+  /* Configure for active connection to discovered peer */
+  struct bgp_config *cf = SKIP_BACK(struct bgp_config, c, sym->proto);
+  cf->remote_ip = ev->peer_addr;
+  cf->local_ip = ev->p->cf->local_ip;
+  cf->iface = ev->iface;
+  cf->ipatt = NULL;
+  cf->passive = 0;
+
+  /* Create and enable the protocol */
+  SKIP_BACK_DECLARE(struct bgp_proto, p, p, proto_spawn(sym->proto, 1));
+
+  proto_enable(&p->p);
+}
+
+void
+bgp_peer_remove(struct callback *cb)
+{
+  struct bgp_peer_remove *ev = (void *) cb;
+  
+  /* Find ALL BGP sessions for this peer and remove them */
+  struct config *cfg = OBSREF_GET(config);
+  if (!cfg)
+    return;
+
+  struct proto_config *pc;
+  WALK_LIST(pc, cfg->protos)
+  {
+    if (pc->protocol != &proto_bgp)
+      continue;
+
+    /* Check protocol instance */
+    if (pc->proto)
+    {
+      struct bgp_proto *bgp_p = (struct bgp_proto *) pc->proto;
+      
+      /* Found a BGP session with matching peer address */
+      if (ipa_equal(bgp_p->remote_ip, ev->peer_addr))
+      {
+        /* Skip parent protocol */
+        if (bgp_is_dynamic(bgp_p))
+          continue;
+        
+        log(L_INFO "%s: Removing BGP session %s for withdrawn peer %I", 
+            ev->p->p.name, pc->name, ev->peer_addr);
+        
+        /* Mark protocol for deletion and disable it */
+        bgp_p->p.cf_new = NULL;
+        bgp_p->p.reconfiguring = 1;
+        proto_disable(&bgp_p->p);
+      }
+      else
+      {
+        log(L_DEBUG "BGP: Session %s with remote %I does not match withdrawn peer %I", 
+            pc->name, bgp_p->remote_ip, ev->peer_addr);
+      }
+    }
+  }
 }
 
 void
@@ -2664,6 +2794,18 @@ bgp_start_locked(void *_p)
       birdloop_leave(sk_loop);
   }
 
+  if (bgp_is_dynamic(p)) {
+    /* Start peers channels immediately for dynamic BGP */
+    struct bgp_channel *c;
+    BGP_WALK_CHANNELS(p, c)
+    {
+      if (c->c.net_type == NET_PEER && !c->c.disabled)
+      {
+        channel_set_state(&c->c, CS_UP);
+      }
+    }
+  }
+
   if (cf->multihop || bgp_is_dynamic(p))
   {
     /* Multi-hop sessions do not use neighbor entries */
@@ -2973,6 +3115,10 @@ bgp_channel_init(struct channel *C, struct channel_config *CF)
   c->cf = cf;
   c->afi = cf->afi;
   c->desc = cf->desc;
+
+  /* Set peers channels to get announcement of any route change */
+  if (C->net_type == NET_PEER && C->ra_mode == RA_UNDEF)
+    C->ra_mode = RA_ANY;
 
   if (cf->igp_table_ip4)
     c->igp_table_ip4 = cf->igp_table_ip4->table;
@@ -4090,7 +4236,7 @@ struct protocol proto_bgp = {
   .name = 		"BGP",
   .template = 		"bgp%d",
   .preference = 	DEF_PREF_BGP,
-  .channel_mask =	NB_IP | NB_VPN | NB_FLOW | NB_MPLS,
+  .channel_mask =	NB_IP | NB_VPN | NB_FLOW | NB_MPLS | NB_PEER,
   .proto_size =		sizeof(struct bgp_proto),
   .config_size =	sizeof(struct bgp_config),
   .postconfig =		bgp_postconfig,
