@@ -43,10 +43,60 @@
  * RFC 6106 - DNS extensions (RDDNS, DNSSL)
  */
 
-static struct ea_class ea_radv_preference, ea_radv_lifetime;
+static struct ea_class ea_radv_preference, ea_radv_lifetime, ea_radv_expires_at;
 
 static void radv_prune_prefixes(struct radv_iface *ifa);
 static void radv_prune_routes(struct radv_proto *p);
+static void radv_neighbor_prune(struct radv_iface *ifa);
+
+void
+radv_announce_peer(struct radv_proto *p, ip_addr peer_ip, u16 router_lifetime)
+{
+  if (!p->peers_channel)
+    return;
+
+  /* Check if channel is ready */
+  if (p->peers_channel->channel_state != CS_UP) {
+    RADV_TRACE(D_EVENTS, "Peers channel not UP yet (state=%d), skipping peer announcement", 
+               p->peers_channel->channel_state);
+    return;
+  }
+
+  /* Compute expiration time */
+  btime now = current_time();
+  btime expires_at = now + (router_lifetime S);
+
+  net_addr_peer n;
+  net_fill_peer((net_addr *) &n, peer_ip);
+
+  ea_list *ea = NULL;
+  ea_set_attr_u32(&ea, &ea_gen_preference, 0, p->peers_channel->preference);
+  ea_set_attr_u32(&ea, &ea_gen_source, 0, RTS_DEVICE);
+  ea_set_attr_u32(&ea, &ea_radv_expires_at, 0, expires_at / 1000000);
+
+  rte e0 = {
+    .attrs = ea,
+    .src = p->p.main_source,
+  };
+
+  RADV_TRACE(D_EVENTS, "Announcing peer to channel: peer_ip: %I, lifetime=%u, expires_at=%T", 
+             peer_ip, router_lifetime, expires_at);
+
+  rte_update(p->peers_channel, (net_addr *) &n, &e0, p->p.main_source);
+}
+
+void
+radv_withdraw_peer(struct radv_proto *p, ip_addr peer_ip)
+{
+  if (!p->peers_channel)
+    return;
+
+  net_addr_peer n;
+  net_fill_peer((net_addr *) &n, peer_ip);
+
+  /* Withdraw the route */
+  rte_update(p->peers_channel, (net_addr *) &n, NULL, p->p.main_source);
+}
 
 static void
 radv_timer(timer *tm)
@@ -62,6 +112,9 @@ radv_timer(timer *tm)
 
   if (p->prune_time <= now)
     radv_prune_routes(p);
+
+  /* Prune stale discovered neighbor routers entries */
+  radv_neighbor_prune(ifa);
 
   radv_send_ra(ifa, IPA_NONE);
 
@@ -210,6 +263,84 @@ radv_prune_prefixes(struct radv_iface *ifa)
   }
 
   ifa->prune_time = next;
+}
+
+void
+radv_neighbor_prune(struct radv_iface *ifa)
+{
+  struct radv_proto *p = ifa->ra;
+
+  /* Skip pruning check if neighbor discovery is not enabled */
+  if (!ifa->cf->neighbor_discovery)
+    return;
+
+  /* Skip if no peers channel configured */
+  if (!p->peers_channel || p->peers_channel->channel_state != CS_UP)
+    return;
+
+  /* Check for expired peers by walking the routing table */
+  btime now = current_time();
+  
+  /* Temporary list to store expired peers (can't withdraw during export walk) */
+  struct expired_peer {
+    struct expired_peer *next;
+    ip_addr peer_ip;
+  };
+  struct expired_peer *expired_list = NULL;
+  
+  /* Walk all routes in the peers channel to check for expired entries */
+  RT_EXPORT_WALK(&p->peers_channel->out_req, u)
+  {
+    switch (u->kind)
+    {
+      case RT_EXPORT_FEED:
+        /* Check each route in the feed */
+        for (uint i = 0; i < u->feed->count_routes; i++)
+        {
+          rte *e = &u->feed->block[i];
+          if (e->flags & REF_OBSOLETE)
+            continue;
+            
+          /* Only process routes from our protocol */
+          if (e->src != p->p.main_source)
+            continue;
+          
+          /* Get the expiration time EA */
+          eattr *expires_ea = ea_find(e->attrs, &ea_radv_expires_at);
+          if (!expires_ea)
+            continue;
+          
+          btime expires_at = expires_ea->u.data * 1000000;
+          
+          if (expires_at <= now)
+          {
+            /* Peer has expired, add to withdrawal list */
+            net_addr_peer *peer_addr = (net_addr_peer *) e->net;
+            
+            struct expired_peer *ep = mb_alloc(p->p.pool, sizeof(struct expired_peer));
+            ep->peer_ip = peer_addr->addr;
+            ep->next = expired_list;
+            expired_list = ep;
+            
+            RADV_TRACE(D_EVENTS, "Peer %I expired (expires_at=%T, now=%T)",
+                      peer_addr->addr, expires_at, now);
+          }
+        }
+        break;
+      default:
+        /* Nothing to do for RT_EXPORT_UPDATE or RT_EXPORT_STOP */
+        break;
+    }
+  }
+  
+  /* Withdraw all expired peers */
+  while (expired_list)
+  {
+    struct expired_peer *ep = expired_list;
+    radv_withdraw_peer(p, ep->peer_ip);
+    expired_list = ep->next;
+    mb_free(ep);
+  }
 }
 
 static char* ev_name[] = { NULL, "Init", "Change", "RS" };
@@ -581,6 +712,12 @@ radv_init(struct proto_config *CF)
 
   P->main_channel = proto_add_channel(P, proto_cf_main_channel(CF));
 
+  /* Add all other configured channels (e.g., peer channel) */
+  struct channel_config *cc;
+  WALK_LIST(cc, CF->channels)
+    if (cc != proto_cf_main_channel(CF))
+      proto_add_channel(P, cc);
+
   P->preexport = radv_preexport;
   P->rt_notify = radv_rt_notify;
   P->iface_sub.if_notify = radv_if_notify;
@@ -618,6 +755,19 @@ radv_start(struct proto *P)
   p->fib_up = 0;
   radv_set_fib(p, cf->propagate_routes);
   p->prune_time = TIME_INFINITY;
+
+  /* Find the peers channel if configured */
+  p->peers_channel = NULL;
+  struct channel *c;
+  WALK_LIST(c, P->channels)
+  {
+    if (c->net_type == NET_PEER)
+    {
+      p->peers_channel = c;
+      RADV_TRACE(D_EVENTS, "Found peers discovery channel: %s", c->name);
+      break;
+    }
+  }
 
   return PS_UP;
 }
@@ -765,10 +915,16 @@ static struct ea_class ea_radv_lifetime = {
   .type = T_INT,
 };
 
+static struct ea_class ea_radv_expires_at = {
+  .name = "radv_expires_at",
+  .legacy_name = "RAdv.expires_at",
+  .type = T_INT,
+};
+
 struct protocol proto_radv = {
   .name =		"RAdv",
   .template =		"radv%d",
-  .channel_mask =	NB_IP6,
+  .channel_mask =	NB_IP6 | NB_PEER,
   .proto_size =		sizeof(struct radv_proto),
   .config_size =	sizeof(struct radv_config),
   .postconfig =		radv_postconfig,
@@ -787,6 +943,7 @@ radv_build(void)
 
   EA_REGISTER_ALL(
       &ea_radv_preference,
-      &ea_radv_lifetime
+      &ea_radv_lifetime,
+      &ea_radv_expires_at
       );
 }
