@@ -2342,6 +2342,17 @@ static const struct bgp_af_desc bgp_af_table[] = {
     .decode_next_hop = bgp_decode_next_hop_none,
     .update_next_hop = bgp_update_next_hop_none,
   },
+  {
+    .afi = BGP_AF_PEER,
+    .net = NET_PEER,
+    .no_igp = 1,
+    .name = "peers",
+    .encode_nlri = NULL,
+    .decode_nlri = NULL,
+    .encode_next_hop = NULL,
+    .decode_next_hop = NULL,
+    .update_next_hop = NULL,
+  },
 };
 
 const struct bgp_af_desc *

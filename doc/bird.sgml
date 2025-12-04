@@ -3807,6 +3807,7 @@ together with their appropriate channels follows.
 @ <cf/vpn6 multicast/ | <cf/vpn6/          | <cf/ipv4/ and <cf/ipv6/ | 2        | 129
 @ <cf/flow4/	      | <cf/flow4/         | ---                     | 1        | 133
 @ <cf/flow6/          | <cf/flow6/         | ---                     | 2        | 133
+@ <cf/peers/          | <cf/peer/         | ---                     | ---      | ---
 </tabular>
 </table>
 
@@ -3827,6 +3828,17 @@ of import and export policies (in contrast to other protocols, where default
 policies of <cf/import all/ and <cf/export none/ are used in absence of explicit
 configuration). Note that blanket policies like <cf/all/ or <cf/none/ can still
 be used in explicit configuration.
+
+<p>The <cf/peers/ channel is a special channel type used for BGP unnumbered
+automatic peering. Unlike traditional AFI/SAFI channels that exchange routing
+information, the peers channel is used to dynamically trigger the creation of
+new BGP sessions. When present in a dynamic BGP configuration, exporting
+peer discovery objects (typically from RAdv with router discovery enabled) to
+this channel will automatically spawn new BGP sessions for each discovered peer.
+The lifetime of these automatic sessions is tied to the presence of the peer
+objects in the peers routing table, withdrawing an object will trigger the
+corresponding BGP session shutdown. This channel is only allowed in dynamic BGP
+instances (those configured with <cf/neighbor range/).
 
 <p>BGP channels have additional config options (together with the common ones):
 
@@ -4072,6 +4084,12 @@ be used in explicit configuration.
 	set <ref id="bgp-max-long-lived-stale-time" name="max long lived stale time">
 	per AFI/SAFI pair instead of per protocol. Default: set by protocol-wide
 	option.
+
+	<tag><label id="bgp-peers-persist">peers persist <m/switch/</tag>
+	This option controls whether automatically spawned BGP sessions should be permanent.
+	When enabled, a BGP session that was initially created automatically through the peers
+	discovery or the dynamic BGP mechanisms will continue to exist even after it has been
+	taken down. Default: on.
 </descrip>
 
 <sect1>Reconfiguration
@@ -4334,6 +4352,42 @@ protocol bgp {
 		export filter someotherfilter;
 		table mymulticasttable4; # Another IPv4 table, dedicated for multicast
 		igp table myigptable4;
+	};
+}
+</code>
+
+<p>Example configuration for BGP unnumbered automatic peering using router discovery:
+
+<p><code>
+# Table for discovered peers
+peers table bgp_peers;
+
+# RAdv protocol with router discovery enabled
+protocol radv {
+	peers { table bgp_peers; };	# Export discovered peers to this table
+
+	interface "eth*" {
+		# Normal RAdv configuration options...
+		router discovery yes;		# Enable reception of ICMPv6 RAs
+	};
+}
+
+# Dynamic BGP with peers channel for automatic peering
+protocol bgp {
+	local as 65000;
+	neighbor range fe80::/10 external;	# Accept link-local peers
+	dynamic name "bgp_auto_";	# Name spawned sessions with this prefix
+
+	peers persist yes;
+
+	ipv6 {
+		export all;
+		import all;
+	};
+
+	peers {
+		table bgp_peers;	# Import peer discovery objects from this table
+		export all;		# Allow all discovered peers to trigger sessions
 	};
 }
 </code>
