@@ -2648,6 +2648,22 @@ bgp_start_locked(void *_p)
 
   DBG("BGP: Got lock\n");
 
+  /* Move postponed socket to protocol's birdloop if present */
+  if (p->postponed_sk)
+  {
+    sock *sk = p->postponed_sk;
+    struct birdloop *sk_loop = sk->loop;
+    
+    if (sk_loop && (sk_loop != p->p.loop))
+      birdloop_enter(sk_loop);
+
+    rmove(sk, p->p.pool);
+    sk_reloop(sk, p->p.loop);
+
+    if (sk_loop && (sk_loop != p->p.loop))
+      birdloop_leave(sk_loop);
+  }
+
   if (cf->multihop || bgp_is_dynamic(p))
   {
     /* Multi-hop sessions do not use neighbor entries */
@@ -2769,15 +2785,6 @@ bgp_start(struct proto *P)
     BGP_WALK_CHANNELS(p, c)
       channel_graceful_restart_lock(&c->c);
   }
-
-  /* Now it's the last chance to move the postponed socket to this BGP,
-   * as bgp_start is the only hook running from main loop. */
-  if (p->postponed_sk)
-    BGP_LISTEN_LOCKED(bl)
-    {
-      rmove(p->postponed_sk, p->p.pool);
-      sk_reloop(p->postponed_sk, p->p.loop);
-    }
 
   /*
    * Before attempting to create the connection, we need to lock the port,
