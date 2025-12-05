@@ -26,6 +26,7 @@ struct eattr;
 
 #define BGP_AFI_IPV4		1
 #define BGP_AFI_IPV6		2
+#define BGP_AFI_PEER		3
 
 #define BGP_SAFI_UNICAST	1
 #define BGP_SAFI_MULTICAST	2
@@ -52,7 +53,7 @@ struct eattr;
 #define BGP_AF_VPN6_MC		BGP_AF( BGP_AFI_IPV6, BGP_SAFI_VPN_MULTICAST )
 #define BGP_AF_FLOW4		BGP_AF( BGP_AFI_IPV4, BGP_SAFI_FLOW )
 #define BGP_AF_FLOW6		BGP_AF( BGP_AFI_IPV6, BGP_SAFI_FLOW )
-
+#define BGP_AF_PEER		BGP_AF( BGP_AFI_PEER, BGP_SAFI_UNICAST )
 
 struct bgp_write_state;
 struct bgp_parse_state;
@@ -191,6 +192,8 @@ struct bgp_channel_config {
   u32 cost;				/* IGP cost for direct next hops */
   u8 import_table;			/* Use c.in_table as Adj-RIB-In */
   u8 export_table;			/* Keep Adj-RIB-Out and export it */
+  u8 peers_persist;			/* Keep spawned BGP sessions after peer discovery route withdrawal */
+  struct iface *peers_iface;		/* Interface for peer discovery (for link-local addresses) */
 
   struct settle_config ptx_exporter_settle;    /* Settle timer for export dumps */
 
@@ -400,6 +403,23 @@ struct bgp_incoming_socket {
   node n;		/* Node in bgp_listen_request -> incoming_sockets */
   sock *sk;		/* The actual socket */
 };
+
+struct bgp_peer_spawn {
+  callback cb;
+  struct bgp_proto *p;		/* Parent protocol */
+  ip_addr peer_addr;		/* Peer address to spawn session for */
+  struct iface *iface;		/* Interface for link-local peers */
+};
+
+struct bgp_peer_remove {
+  callback cb;
+  struct bgp_proto *p;		/* Parent protocol */
+  ip_addr peer_addr;		/* Peer address to remove session for */
+};
+
+/* Callback hooks (implemented in bgp.c) */
+void bgp_peer_spawn(struct callback *cb);
+void bgp_peer_remove(struct callback *cb);
 
 struct bgp_listen_request {
   node pn;				/* Node in bgp_proto listen list */
@@ -978,5 +998,11 @@ enum bgp_attr_id {
 #define ORIGIN_EGP		1
 #define ORIGIN_INCOMPLETE	2
 
+/* Dynamic BGP detection */
+
+#define bgp_is_dynamic(x) (_Generic((x),			\
+    struct bgp_proto *: ipa_zero((x)->remote_ip),		\
+    struct bgp_config *: ipa_zero((x)->remote_ip),		\
+    struct bgp_listen_request *: ipa_zero((x)->remote_ip)))
 
 #endif

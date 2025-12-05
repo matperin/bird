@@ -33,9 +33,9 @@ CF_KEYWORDS(BGP, LOCAL, NEIGHBOR, AS, HOLD, TIME, CONNECT, RETRY, KEEPALIVE,
 	STRICT, BIND, CONFEDERATION, MEMBER, MULTICAST, FLOW4, FLOW6, LONG,
 	LIVED, STALE, IMPORT, IBGP, EBGP, MANDATORY, INTERNAL, EXTERNAL, SETS,
 	DYNAMIC, RANGE, NAME, DIGITS, AIGP, ORIGINATE, COST, ENFORCE,
-	FIRST, FREE, VALIDATE, BASE, ROLE, ROLES, PEER, PROVIDER, CUSTOMER,
+	FIRST, FREE, VALIDATE, BASE, ROLE, ROLES, PEER, PEERS, PROVIDER, CUSTOMER,
 	RS_SERVER, RS_CLIENT, REQUIRE, BGP_OTC, GLOBAL, SEND, RECV, MIN, MAX,
-	TX, SIZE, WARNING,
+	TX, SIZE, WARNING, PERSIST,
 	AUTHENTICATION, NONE, MD5, AO, FORMAT, NATIVE, SINGLE, DOUBLE)
 
 CF_KEYWORDS(KEY, KEYS, SECRET, DEPRECATED, PREFERRED, ALGORITHM, CMAC, AES128)
@@ -270,6 +270,7 @@ bgp_afi:
  | VPN6 MULTICAST	{ $$ = BGP_AF_VPN6_MC; }
  | FLOW4		{ $$ = BGP_AF_FLOW4; }
  | FLOW6		{ $$ = BGP_AF_FLOW6; }
+ | PEERS		{ $$ = BGP_AF_PEER; }
  ;
 
 tcp_ao_key_start: KEY {
@@ -443,6 +444,16 @@ bgp_channel_item:
     BGP_CC->validate = $2;
     if (BGP_SAFI(BGP_CC->afi) != BGP_SAFI_FLOW)
       cf_error("Validate option limited to flowspec channels");
+   }
+ | PERSIST bool {
+    BGP_CC->peers_persist = $2;
+    if (BGP_CC->c.net_type != NET_PEER)
+      cf_error("Persist option only available for peers channels");
+   }
+ | FROM text {
+    BGP_CC->peers_iface = if_get_by_name($2);
+    if (BGP_CC->c.net_type != NET_PEER)
+      cf_error("From option only available for peers channels");
    }
  | GRACEFUL RESTART bool { BGP_CC->gr_able = $3; }
  | LONG LIVED GRACEFUL RESTART bool { BGP_CC->llgr_able = $5; }

@@ -24,7 +24,8 @@
 #define NET_IP6_SADR	9
 #define NET_MPLS	10
 #define NET_ASPA	11
-#define NET_MAX		12
+#define NET_PEER	12
+#define NET_MAX		13
 
 #define NB_IP4		(1 << NET_IP4)
 #define NB_IP6		(1 << NET_IP6)
@@ -37,6 +38,7 @@
 #define NB_IP6_SADR	(1 << NET_IP6_SADR)
 #define NB_MPLS		(1 << NET_MPLS)
 #define NB_ASPA		(1 << NET_ASPA)
+#define NB_PEER		(1 << NET_PEER)
 
 #define NB_IP		(NB_IP4 | NB_IP6)
 #define NB_VPN		(NB_VPN4 | NB_VPN6)
@@ -133,6 +135,13 @@ typedef struct net_addr_aspa {
   u32 asn;
 } net_addr_aspa;
 
+typedef struct net_addr_peer {
+  u8 type;
+  u8 pxlen;
+  u16 length;
+  ip_addr addr;			/* Peer IP address (IPv6 or IPv4) */
+} net_addr_peer;
+
 typedef struct net_addr_ip6_sadr {
   u8 type;
   u8 dst_pxlen;
@@ -155,6 +164,7 @@ typedef union net_addr_union {
   net_addr_ip6_sadr ip6_sadr;
   net_addr_mpls mpls;
   net_addr_aspa aspa;
+  net_addr_peer peer;
 } net_addr_union;
 
 
@@ -182,6 +192,7 @@ extern const u16 net_max_text_length[];
 #define NET_PTR_FLOW6(_n)	NET_PTR_GEN((_n), NET_FLOW6, flow6)
 #define NET_PTR_IP6_SADR(_n)	NET_PTR_GEN((_n), NET_IP6_SADR, ip6_sadr)
 #define NET_PTR_MPLS(_n)	NET_PTR_GEN((_n), NET_MPLS, mpls)
+#define NET_PTR_PEER(_n)	NET_PTR_GEN((_n), NET_PEER, peer)
 
 
 #define NET_ADDR_IP4(prefix,pxlen) \
@@ -217,6 +228,9 @@ extern const u16 net_max_text_length[];
 #define NET_ADDR_MPLS(label) \
   ((net_addr_mpls) { NET_MPLS, 20, sizeof(net_addr_mpls), label })
 
+#define NET_ADDR_PEER(addr) \
+  ((net_addr_peer) { NET_PEER, ipa_is_ip4(addr) ? 32 : 128, sizeof(net_addr_peer), addr })
+
 
 static inline void net_fill_ip4(net_addr *a, ip4_addr prefix, uint pxlen)
 { *(net_addr_ip4 *)a = NET_ADDR_IP4(prefix, pxlen); }
@@ -244,6 +258,9 @@ static inline void net_fill_mpls(net_addr *a, u32 label)
 
 static inline void net_fill_aspa(net_addr *a, u32 asn)
 { *(net_addr_aspa *)a = NET_ADDR_ASPA(asn); }
+
+static inline void net_fill_peer(net_addr *a, ip_addr addr)
+{ *(net_addr_peer *)a = NET_ADDR_PEER(addr); }
 
 static inline void net_fill_ipa(net_addr *a, ip_addr prefix, uint pxlen)
 {
@@ -489,6 +506,9 @@ static inline int net_compare_mpls(const net_addr_mpls *a, const net_addr_mpls *
 static inline int net_compare_aspa(const net_addr_aspa *a, const net_addr_aspa *b)
 { return uint_cmp(a->asn, b->asn); }
 
+static inline int net_compare_peer(const net_addr_peer *a, const net_addr_peer *b)
+{ return ipa_compare(a->addr, b->addr); }
+
 int net_compare(const net_addr *a, const net_addr *b);
 
 
@@ -527,6 +547,9 @@ static inline void net_copy_mpls(net_addr_mpls *dst, const net_addr_mpls *src)
 
 static inline void net_copy_aspa(net_addr_aspa *dst, const net_addr_aspa *src)
 { memcpy(dst, src, sizeof(net_addr_aspa)); }
+
+static inline void net_copy_peer(net_addr_peer *dst, const net_addr_peer *src)
+{ memcpy(dst, src, sizeof(net_addr_peer)); }
 
 
 static inline u32 px4_hash(ip4_addr prefix, u32 pxlen)
@@ -573,6 +596,9 @@ static inline u32 net_hash_mpls(const net_addr_mpls *n)
 
 static inline u32 net_hash_aspa(const net_addr_aspa *n)
 { return u32_hash(n->asn); }
+
+static inline u32 net_hash_peer(const net_addr_peer *n)
+{ return ipa_hash(n->addr); }
 
 u32 net_hash(const net_addr *a);
 
@@ -625,6 +651,9 @@ static inline int net_validate_mpls(const net_addr_mpls *n)
 
 static inline int net_validate_aspa(const net_addr_aspa *n)
 { return n->asn > 0; }
+
+static inline int net_validate_peer(const net_addr_peer *n)
+{ return ipa_nonzero(n->addr); }
 
 static inline int net_validate_ip6_sadr(const net_addr_ip6_sadr *n)
 { return net_validate_px6(n->dst_prefix, n->dst_pxlen) && net_validate_px6(n->src_prefix, n->src_pxlen); }

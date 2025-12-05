@@ -91,6 +91,7 @@ struct radv_iface_config
   u8 route_lifetime_sensitive;	/* Whether route_lifetime depends on trigger */
   u8 default_preference;	/* Default Router Preference (RFC 4191) */
   u8 route_preference;		/* Specific Route Preference (RFC 4191) */
+  u8 neighbor_discovery;	/* Enable neighbor router discovery */
 };
 
 struct radv_prefix_config
@@ -161,6 +162,7 @@ struct radv_proto
   u8 fib_up;			/* FIB table (routes) is initialized */
   struct fib routes;		/* FIB table of specific routes (struct radv_route) */
   btime prune_time;		/* Next time of route table pruning */
+  struct channel *peers_channel;	/* Channel for peer discovery (NET_PEER) */
 };
 
 struct radv_prefix		/* One prefix we advertise */
@@ -221,6 +223,8 @@ static inline void radv_invalidate(struct radv_iface *ifa)
 
 /* radv.c */
 void radv_iface_notify(struct radv_iface *ifa, int event);
+void radv_announce_peer(struct radv_proto *p, ip_addr peer_ip, u16 router_lifetime);
+void radv_withdraw_peer(struct radv_proto *p, ip_addr peer_ip);
 
 /* packets.c */
 int radv_process_domain(struct radv_dnssl_config *cf);

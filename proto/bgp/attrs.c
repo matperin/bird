@@ -2468,6 +2468,63 @@ bgp_rt_notify(struct proto *P, struct channel *C, const net_addr *n, rte *new, c
   if (SHUTTING_DOWN)
     return;
 
+  /* Handle peers channel - spawn BGP sessions for discovered peers */
+  if (C->net_type == NET_PEER)
+  {
+    /* If this is a spawned child, ignore all notifications from the peers channel */
+    if (p->cf->c.parent)
+      return;
+
+    const net_addr_peer *peer = (const net_addr_peer *) n;
+
+    /* Only handle peer management for dynamic BGP instances and link-local addresses */
+    if (bgp_is_dynamic(p) && ipa_is_link_local(peer->addr))
+    {
+      if (new && !old)
+      {
+        /* New peer discovered - send spawn event to main loop */
+        struct bgp_peer_spawn *ev = mb_alloc(p->p.pool, sizeof(struct bgp_peer_spawn));
+        *ev = (struct bgp_peer_spawn) {
+          .p = p,
+          .peer_addr = peer->addr,
+          .iface = bc->cf->peers_iface,
+        };
+
+        /* Initialize callback to run on main_birdloop */
+        callback_init(&ev->cb, bgp_peer_spawn, &main_birdloop);
+
+        /* Send the event */
+        callback_activate(&ev->cb);
+
+        log(L_INFO "%s: Peer %I discovered, queued for BGP session spawn", 
+          p->p.name, peer->addr);
+      }
+      else if (!new && old)
+      {
+        /* If persist is not enabled, stop spawned sessions for this peer */
+        if (!bc->cf->peers_persist)
+        {
+          /* Send removal event to main loop */
+          struct bgp_peer_remove *ev = mb_alloc(p->p.pool, sizeof(struct bgp_peer_remove));
+          *ev = (struct bgp_peer_remove) {
+            .p = p,
+            .peer_addr = peer->addr,
+          };
+
+          /* Initialize callback to run on main_birdloop */
+          callback_init(&ev->cb, bgp_peer_remove, &main_birdloop);
+
+          /* Send the event */
+          callback_activate(&ev->cb);
+
+          log(L_INFO "%s: Peer %I withdrawn from channel, queued for BGP session removal", 
+              p->p.name, peer->addr);
+        }
+      }
+    }
+    return;
+  }
+
   /* Ignore non-BGP channels */
   if (C->class != &channel_bgp)
     return;
