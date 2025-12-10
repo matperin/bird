@@ -156,6 +156,7 @@ struct proto {
   TLIST_LIST(proto_neigh) neighbors;	/* List of neighbor structures */
   struct iface_subscription iface_sub;	/* Interface notification subscription */
   struct channel *mpls_channel;		/* MPLS channel, when used */
+  struct channel *peers_channel;	/* Peers channel for dynamic BGP peer discovery */
 
   const char *name;			/* Name of this instance (== cf->name) */
   u32 debug;				/* Debugging flags */
@@ -754,6 +755,8 @@ static inline struct channel_config *proto_cf_main_channel(struct proto_config *
 { return proto_cf_find_channel(pc, pc->net_type); }
 static inline struct channel_config *proto_cf_mpls_channel(struct proto_config *pc)
 { return (pc->net_type != NET_MPLS) ? proto_cf_find_channel(pc, NET_MPLS) : NULL; }
+static inline struct channel_config *proto_cf_peers_channel(struct proto_config *pc)
+{ return proto_cf_find_channel(pc, NET_PEER); }
 
 struct channel *proto_find_channel_by_table(struct proto *p, rtable *t);
 struct channel *proto_find_channel_by_name(struct proto *p, const char *n);

@@ -460,6 +460,44 @@ radv_receive_rs(struct radv_proto *p, struct radv_iface *ifa, ip_addr from)
     radv_iface_notify(ifa, RA_EV_RS);
 }
 
+void
+radv_process_ra(struct radv_iface *ifa, ip_addr from, struct radv_ra_packet *pkt, int length)
+{
+  struct radv_proto *p = ifa->ra;
+  
+  if (!ifa->cf->router_discovery)
+    return;
+
+  /* Basic validation */
+  if ((uint)length < sizeof(struct radv_ra_packet))
+  {
+    RADV_TRACE(D_PACKETS, "Malformed RA received from %I via %s",
+	       from, ifa->iface->name);
+    return;
+  }
+
+  u16 router_lifetime = ntohs(pkt->router_lifetime);
+  u32 ifindex = ifa->iface->index;
+  
+  /* Router lifetime of 0 means withdrawal */
+  if (router_lifetime == 0)
+  {
+    RADV_TRACE(D_EVENTS, "Neighbor %I on %s (ifindex=%u) withdrawing (lifetime=0)",
+	       from, ifa->iface->name, ifindex);
+    /* Withdraw from routing table if peers channel is configured */
+    radv_withdraw_peer(p, from, ifindex);
+    
+    return;
+  }
+  
+  /* Announce/update the peer in routing table */
+  RADV_TRACE(D_PACKETS, "Processed RA from %I on %s (ifindex=%u): lifetime=%u, hop_limit=%u",
+	     from, ifa->iface->name, ifindex, router_lifetime, pkt->current_hop_limit);
+  
+  /* Announce to routing table with router lifetime for expiration tracking and interface index */
+  radv_announce_peer(p, from, router_lifetime, ifindex);
+}
+
 static int
 radv_rx_hook(sock *sk, uint size)
 {
@@ -493,7 +531,8 @@ radv_rx_hook(sock *sk, uint size)
   case ICMPV6_RA:
     RADV_TRACE(D_PACKETS, "Received RA from %I via %s",
 	       sk->faddr, ifa->iface->name);
-    /* FIXME - there should be some checking of received RAs, but we just ignore them */
+    if (ifa->cf->router_discovery)
+      radv_process_ra(ifa, sk->faddr, (struct radv_ra_packet *)buf, size);
     return 1;
 
   default:

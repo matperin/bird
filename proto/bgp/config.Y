@@ -33,9 +33,9 @@ CF_KEYWORDS(BGP, LOCAL, NEIGHBOR, AS, HOLD, TIME, CONNECT, RETRY, KEEPALIVE,
 	STRICT, BIND, CONFEDERATION, MEMBER, MULTICAST, FLOW4, FLOW6, LONG,
 	LIVED, STALE, IMPORT, IBGP, EBGP, MANDATORY, INTERNAL, EXTERNAL, SETS,
 	DYNAMIC, RANGE, NAME, DIGITS, AIGP, ORIGINATE, COST, ENFORCE,
-	FIRST, FREE, VALIDATE, BASE, ROLE, ROLES, PEER, PROVIDER, CUSTOMER,
+	FIRST, FREE, VALIDATE, BASE, ROLE, ROLES, PEER, PEERS, PROVIDER, CUSTOMER,
 	RS_SERVER, RS_CLIENT, REQUIRE, BGP_OTC, GLOBAL, SEND, RECV, MIN, MAX,
-	TX, SIZE, WARNING,
+	TX, SIZE, WARNING, PERSIST,
 	AUTHENTICATION, NONE, MD5, AO, FORMAT, NATIVE, SINGLE, DOUBLE)
 
 CF_KEYWORDS(KEY, KEYS, SECRET, DEPRECATED, PREFERRED, ALGORITHM, CMAC, AES128)
@@ -92,6 +92,7 @@ bgp_proto_start: proto_start BGP {
      BGP_CFG->check_link = -1;
      BGP_CFG->send_hold_time = -1;
      BGP_CFG->tx_size_warning = 0;
+     BGP_CFG->peers_persist = 1;
    }
  ;
 
@@ -157,6 +158,7 @@ bgp_proto:
      BGP_CFG->local_ip = $3;
      if ($4) BGP_CFG->iface = $4;
    }
+ | bgp_proto PEERS PERSIST bool ';' { BGP_CFG->peers_persist = $4; }
  | bgp_proto NEIGHBOR bgp_nbr_opts ';'
  | bgp_proto NEIGHBOR ipa ipa_scope bgp_nbr_opts ';' {
      if (ipa_nonzero(BGP_CFG->remote_ip) || BGP_CFG->remote_range)
@@ -270,6 +272,7 @@ bgp_afi:
  | VPN6 MULTICAST	{ $$ = BGP_AF_VPN6_MC; }
  | FLOW4		{ $$ = BGP_AF_FLOW4; }
  | FLOW6		{ $$ = BGP_AF_FLOW6; }
+ | PEERS		{ $$ = BGP_AF_PEER; }
  ;
 
 tcp_ao_key_start: KEY {
@@ -398,7 +401,10 @@ bgp_channel_start: bgp_afi
   {
     BGP_CC->c.in_filter = FILTER_UNDEF;
     BGP_CC->c.out_filter = FILTER_UNDEF;
-    BGP_CC->c.ra_mode = RA_UNDEF;
+    if ($1 == BGP_AF_PEER)
+      BGP_CC->c.ra_mode = RA_ANY;
+    else
+      BGP_CC->c.ra_mode = RA_UNDEF;
     BGP_CC->afi = $1;
     BGP_CC->desc = desc;
     BGP_CC->next_hop_keep = 0xff; /* undefined */
